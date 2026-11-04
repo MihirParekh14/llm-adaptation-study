@@ -1,5 +1,7 @@
 # LLM Adaptation Study
 
+[![CI](https://github.com/MihirParekh14/llm-adaptation-study/actions/workflows/ci.yml/badge.svg)](https://github.com/MihirParekh14/llm-adaptation-study/actions/workflows/ci.yml)
+
 **LoRA fine-tuning against in-context learning**, on a task where the two are
 genuinely different, measured for accuracy *and* for cost.
 
