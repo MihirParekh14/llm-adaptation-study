@@ -122,6 +122,11 @@ class GenerationOutput:
     texts: list[str]
     seconds: float
     prompt_tokens: int
+    truncated: int = 0
+
+    @property
+    def truncation_rate(self) -> float:
+        return self.truncated / max(len(self.texts), 1)
 
 
 def generate(
@@ -130,6 +135,7 @@ def generate(
     prompts: list[str],
     batch_size: int = 8,
     max_new_tokens: int = config.MAX_NEW_TOKENS,
+    max_prompt_tokens: int = config.MAX_PROMPT_TOKENS,
 ) -> GenerationOutput:
     """Generate a completion for each prompt, greedily.
 
@@ -139,17 +145,33 @@ def generate(
     Only the newly generated tokens are decoded. Returning the prompt as part
     of the answer would let the label list in the prompt satisfy the parser,
     and every method would score suspiciously well.
+
+    **Truncation cuts from the left, and is counted.** A tokenizer truncates
+    from the right by default, which removes the end of the prompt -- and the
+    end of the prompt is the question. A 77-example few-shot prompt overran a
+    2,048-token limit in an earlier run, the question was silently deleted, and
+    the method scored 2% while appearing to have been given every chance. If
+    anything has to go it should be the oldest worked example, not the thing
+    being asked. Anything still cut is counted and reported, because a
+    truncated prompt invalidates the measurement rather than weakening it.
     """
     import torch  # noqa: PLC0415
 
+    tokenizer.truncation_side = "left"
+
     outputs: list[str] = []
     prompt_tokens = 0
+    truncated = 0
     started = time.time()
 
     for start in range(0, len(prompts), batch_size):
         batch = prompts[start : start + batch_size]
+
+        untruncated = tokenizer(batch, padding=False, truncation=False)["input_ids"]
+        truncated += sum(len(ids) > max_prompt_tokens for ids in untruncated)
+
         encoded = tokenizer(batch, return_tensors="pt", padding=True,
-                            truncation=True, max_length=2048).to(model.device)
+                            truncation=True, max_length=max_prompt_tokens).to(model.device)
         prompt_tokens += int(encoded["input_ids"].numel())
 
         with torch.no_grad():
@@ -167,4 +189,5 @@ def generate(
         texts=outputs,
         seconds=time.time() - started,
         prompt_tokens=prompt_tokens // max(len(prompts), 1),
+        truncated=truncated,
     )

@@ -31,6 +31,7 @@ from src.prompting import (
     INSTRUCTION,
     build_prompt,
     build_training_text,
+    fit_shots,
     format_label_list,
     prompt_token_estimate,
     select_shots,
@@ -291,3 +292,134 @@ def test_an_empty_result_set_renders_without_crashing():
 def test_the_parser_effect_table_shows_both_scorings():
     text = format_parser_effect([result("in-context", 0.7, 0.4)])
     assert "strict" in text and "lenient" in text
+
+
+# --- the truncation bug ----------------------------------------------------
+#
+# A smoke run scored few-shot at 2% against zero-shot's 44%. The cause was not
+# the model: the prompt overran the token limit and the tokenizer cut from the
+# right, which removes the end of the prompt -- and the end of the prompt is
+# the question. The model was shown 76 worked examples and asked nothing.
+
+
+def test_the_question_is_the_last_thing_in_the_prompt():
+    """Which is why right-side truncation destroys it."""
+    prompt = build_prompt("where is my card", LABELS)
+    assert prompt.rstrip().endswith("Intent:")
+    assert prompt.index("where is my card") > prompt.index("Available intents:")
+
+
+def test_the_question_survives_when_the_prompt_is_cut_from_the_left():
+    """The fix, stated as a test: cut the oldest example, keep the question."""
+    shots = select_shots(pool(3), LABELS, shots_per_class=1)
+    prompt = build_prompt("where is my card", LABELS, shots=shots)
+
+    kept = prompt[len(prompt) // 2:]
+    assert "where is my card" in kept
+    assert kept.rstrip().endswith("Intent:")
+
+
+def realistic_banking_prompt() -> str:
+    """A full 77-class few-shot prompt with messages of a realistic length."""
+    many_labels = [
+        "card_arrival", "balance_not_updated_after_bank_transfer",
+        "apple_pay_or_google_pay", "card_payment_fee_charged",
+    ] + [f"intent_{i:02d}" for i in range(73)]
+    big_pool = [
+        Example(
+            text=f"hello i have a question about my account and {label} "
+                 f"could you please help me understand what is going on here",
+            label=label,
+        )
+        for label in many_labels
+    ]
+    shots = select_shots(big_pool, many_labels, shots_per_class=1)
+    return build_prompt("where is my card", many_labels, shots=shots)
+
+
+def test_a_full_few_shot_prompt_is_well_over_a_thousand_tokens():
+    """The condition that triggered the bug, so it is not forgotten."""
+    assert prompt_token_estimate(realistic_banking_prompt()) > 1500
+
+
+def test_the_word_based_estimate_undercounts_snake_case_labels():
+    """The reason the overrun was missed.
+
+    `prompt_token_estimate` counts words times 1.3. A label like
+    `balance_not_updated_after_bank_transfer` is one word and about eight real
+    tokens, so the estimate reported 1,587 for a prompt that truly ran past
+    2,048 and was silently cut. The estimate is fine for comparing two prompts
+    and must never be used to set a budget -- hence `MAX_PROMPT_TOKENS` has
+    room to spare rather than being fitted to this number.
+    """
+    label = "balance_not_updated_after_bank_transfer"
+    assert prompt_token_estimate(label) <= 2
+    assert len(label.split("_")) >= 6  # really six-plus tokens, not one
+
+
+# --- fitting the prompt to the budget --------------------------------------
+
+
+def words(text: str) -> int:
+    """A stand-in token counter: one token per whitespace-separated word."""
+    return len(text.split())
+
+
+def test_shots_are_dropped_until_the_prompt_fits():
+    shots = select_shots(pool(3), LABELS, shots_per_class=1)
+    full = words(build_prompt("q", LABELS, shots=shots))
+
+    kept = fit_shots("q", LABELS, shots, count_tokens=words, budget=full // 2)
+    assert 0 < len(kept) < len(shots)
+    assert words(build_prompt("q", LABELS, shots=kept)) <= full // 2
+
+
+def test_nothing_is_dropped_when_the_prompt_already_fits():
+    shots = select_shots(pool(3), LABELS, shots_per_class=1)
+    assert fit_shots("q", LABELS, shots, count_tokens=words, budget=100_000) == shots
+
+
+def test_fitting_stops_at_zero_shots_rather_than_looping():
+    """A budget too small even for the label list must terminate."""
+    shots = select_shots(pool(3), LABELS, shots_per_class=1)
+    assert fit_shots("q", LABELS, shots, count_tokens=words, budget=1) == []
+
+
+def test_the_question_survives_however_many_shots_are_dropped():
+    """The whole point. Examples give way; the question never does."""
+    shots = select_shots(pool(3), LABELS, shots_per_class=1)
+    kept = fit_shots("where is my card", LABELS, shots, count_tokens=words, budget=5)
+
+    prompt = build_prompt("where is my card", LABELS, shots=kept)
+    assert "where is my card" in prompt
+    assert prompt.rstrip().endswith("Intent:")
+
+
+# --- surviving a library upgrade -------------------------------------------
+
+
+def test_unsupported_arguments_are_dropped_rather_than_crashing():
+    """A run died on `unexpected keyword argument 'warmup_ratio'` after an
+    hour of setup, because Colab had a newer transformers than the code
+    expected."""
+    from src.finetune import supported_arguments
+
+    class Older:
+        def __init__(self, output_dir, learning_rate=1e-4):
+            pass
+
+    kept = supported_arguments(Older, {
+        "output_dir": "x", "learning_rate": 2e-4, "warmup_ratio": 0.03,
+    })
+    assert kept == {"output_dir": "x", "learning_rate": 2e-4}
+
+
+def test_everything_supported_is_kept():
+    from src.finetune import supported_arguments
+
+    class Newer:
+        def __init__(self, output_dir, learning_rate=1e-4, warmup_ratio=0.0):
+            pass
+
+    wanted = {"output_dir": "x", "learning_rate": 2e-4, "warmup_ratio": 0.03}
+    assert supported_arguments(Newer, wanted) == wanted

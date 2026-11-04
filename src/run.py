@@ -26,7 +26,7 @@ from src.evaluate import (
     worst_classes,
 )
 from src.labels import LabelParser
-from src.prompting import build_prompt, prompt_token_estimate, select_shots
+from src.prompting import build_prompt, fit_shots, prompt_token_estimate, select_shots
 
 METHODS = ("zero-shot", "few-shot", "lora")
 
@@ -76,7 +76,12 @@ def main() -> None:
 
     train = cap(train_all, args.train_examples)
     test = cap(test_all, args.eval_examples)
-    shots = select_shots(train, labels)
+
+    # Worked examples are chosen from the full training split, not the capped
+    # one. Picking them from a 500-row sample left one class with no example at
+    # all, so the prompt silently offered 76 of 77 and the model could not have
+    # got that class right.
+    shots = select_shots(train_all, labels)
     parser = LabelParser(labels)
     truth = [example.label for example in test]
 
@@ -86,7 +91,7 @@ def main() -> None:
     print(f"  classes                  {len(labels)}")
     print(f"  training examples        {len(train):,}")
     print(f"  held-out examples        {len(test):,}")
-    print(f"  worked examples in prompt {len(shots)}")
+    print(f"  worked examples in prompt {len(shots)} of {len(labels)}")
     print(f"  always-guess-commonest   {majority_accuracy(test):.1%}")
     print(f"  prompt size, zero-shot   ~{prompt_token_estimate(zero_prompt):,} tokens")
     print(f"  prompt size, few-shot    ~{prompt_token_estimate(few_prompt):,} tokens\n")
@@ -125,7 +130,26 @@ def main() -> None:
                     free_memory(adapted, base)
                 else:
                     model, tokenizer = load_model_and_tokenizer(model_id)
-                    use_shots = shots if method == "few-shot" else None
+
+                    use_shots = None
+                    if method == "few-shot":
+                        # Fit to the real tokenizer, not a word estimate. The
+                        # longest message is used so every prompt fits, not
+                        # just the average one.
+                        longest = max(test, key=lambda e: len(e.text))
+                        def count_tokens(text: str, tok=tokenizer) -> int:
+                            return len(tok(text)["input_ids"])
+
+                        use_shots = fit_shots(
+                            longest.text, labels, shots,
+                            count_tokens=count_tokens,
+                            budget=config.MAX_PROMPT_TOKENS - config.MAX_NEW_TOKENS,
+                        )
+                        if len(use_shots) < len(shots):
+                            print(f"  {'':<11} note: {len(shots) - len(use_shots)} worked "
+                                  f"examples dropped to fit {config.MAX_PROMPT_TOKENS} tokens "
+                                  f"({len(use_shots)} kept)")
+
                     prompts = [build_prompt(e.text, labels, shots=use_shots) for e in test]
                     generated = generate(model, tokenizer, prompts,
                                          batch_size=args.batch_size)
@@ -135,6 +159,11 @@ def main() -> None:
                         peak_memory_gb=peak_memory_gb(),
                     )
                     free_memory(model)
+
+                if generated.truncated:
+                    print(f"  {'':<11} WARNING: {generated.truncated} of {len(test)} prompts "
+                          f"were too long and were cut. Raise MAX_PROMPT_TOKENS -- "
+                          f"these results do not mean anything.")
 
                 result = evaluate_generations(generated.texts, parser, truth,
                                               method, name, **cost)

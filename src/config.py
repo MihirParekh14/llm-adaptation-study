@@ -84,6 +84,18 @@ MAX_PROMPT_EXAMPLES = 77
 # --- Generation ------------------------------------------------------------
 
 MAX_NEW_TOKENS = 16
+
+# How many tokens of prompt a model is given before anything is cut.
+#
+# This number ended a smoke run at 2,048 with nothing to show for it. A
+# few-shot prompt carrying 77 worked examples runs past 2,000 tokens, and the
+# tokenizer truncates from the right by default -- so the end of the prompt was
+# removed, and the end of the prompt is the question. The model was shown 76
+# examples and then asked nothing. It scored 2%, and the obvious reading was
+# that few-shot learning does not work on 77 classes.
+#
+# 4,096 fits every model here, Mistral v0.1's sliding window included.
+MAX_PROMPT_TOKENS = 4096
 TEMPERATURE = 0.0  # greedy: this is classification, not writing
 
 # --- Label parsing ---------------------------------------------------------

@@ -8,6 +8,7 @@ possible on a free 16 GB card at all.
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass
 
@@ -24,6 +25,30 @@ class TrainingOutcome:
     total_params: int
     peak_memory_gb: float
     final_loss: float
+
+
+def supported_arguments(cls, wanted: dict) -> dict:
+    """Keep only the arguments ``cls`` actually accepts, and say what was dropped.
+
+    `TrainingArguments` changes between transformers releases, and Colab
+    upgrades underneath you. A run here died with
+    ``unexpected keyword argument 'warmup_ratio'`` after an hour of setup --
+    not because the setting was wrong, but because the installed version had
+    moved on.
+
+    Filtering on the real signature means a version change costs a warning
+    instead of the session. The dropped names are printed rather than
+    swallowed, because a training run that quietly ignored the learning rate
+    would be worse than one that crashed.
+    """
+    accepted = set(inspect.signature(cls.__init__).parameters)
+    kept = {name: value for name, value in wanted.items() if name in accepted}
+
+    dropped = sorted(set(wanted) - set(kept))
+    if dropped:
+        print(f"  note: this transformers version does not accept {', '.join(dropped)} "
+              f"-- continuing without them")
+    return kept
 
 
 def lora_config():
@@ -88,21 +113,21 @@ def finetune(
     # what the card reports rather than from a constant.
     use_bf16 = supports_bfloat16() and config.USE_BF16
 
-    arguments = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=epochs,
-        per_device_train_batch_size=config.BATCH_SIZE,
-        gradient_accumulation_steps=config.GRAD_ACCUMULATION,
-        learning_rate=config.LEARNING_RATE,
-        warmup_ratio=config.WARMUP_RATIO,
-        logging_steps=25,
-        save_strategy="no",
-        report_to=[],
-        fp16=not use_bf16,
-        bf16=use_bf16,
-        optim="paged_adamw_8bit",
-        seed=config.RANDOM_SEED,
-    )
+    arguments = TrainingArguments(**supported_arguments(TrainingArguments, {
+        "output_dir": output_dir,
+        "num_train_epochs": epochs,
+        "per_device_train_batch_size": config.BATCH_SIZE,
+        "gradient_accumulation_steps": config.GRAD_ACCUMULATION,
+        "learning_rate": config.LEARNING_RATE,
+        "warmup_ratio": config.WARMUP_RATIO,
+        "logging_steps": 25,
+        "save_strategy": "no",
+        "report_to": [],
+        "fp16": not use_bf16,
+        "bf16": use_bf16,
+        "optim": "paged_adamw_8bit",
+        "seed": config.RANDOM_SEED,
+    }))
 
     trainer = Trainer(model=model, args=arguments, train_dataset=dataset)
 

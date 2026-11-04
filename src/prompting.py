@@ -86,6 +86,36 @@ def build_training_text(example: Example, labels: list[str]) -> str:
     return build_prompt(example.text, labels) + f" {example.label}"
 
 
+def fit_shots(
+    message: str,
+    labels: list[str],
+    shots: list[Example],
+    count_tokens,
+    budget: int,
+) -> list[Example]:
+    """Drop worked examples until the prompt fits in ``budget`` tokens.
+
+    Truncation is not an option here, because neither end of this prompt is
+    disposable. Cutting from the right removes the question -- that cost one
+    run its few-shot result, which came back at 2% because the model was shown
+    76 examples and asked nothing. Cutting from the left removes the
+    instruction and the list of 77 labels, so the model no longer knows what it
+    is choosing between.
+
+    Worked examples are the only part that degrades gracefully: with fewer of
+    them the task gets harder, but it stays the same task. So they are what
+    gives way, and how many were dropped is reported rather than hidden.
+
+    ``count_tokens`` is injected so this can be tested without a tokenizer,
+    and so the real run counts real tokens instead of a word-based estimate --
+    that estimate is what hid the overrun in the first place.
+    """
+    kept = list(shots)
+    while kept and count_tokens(build_prompt(message, labels, shots=kept)) > budget:
+        kept.pop()
+    return kept
+
+
 def prompt_token_estimate(prompt: str) -> int:
     """A rough token count, for comparing prompt cost without a tokenizer.
 

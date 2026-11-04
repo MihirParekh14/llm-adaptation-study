@@ -72,6 +72,39 @@ answers all of them well.
 
 ---
 
+## A second defect, found by running it
+
+The first smoke run scored few-shot at **2%** against zero-shot's **44%**. The
+obvious reading is that in-context learning fails when there are 77 classes.
+
+That reading is wrong. The prompt was over the token limit, and a tokenizer
+truncates from the **right** by default — so the end of the prompt was deleted,
+and the end of the prompt is the question. The model was shown 76 worked
+examples and then asked nothing.
+
+Two things made it hard to see:
+
+- It raises nothing. Truncation is a normal operation on a normal input.
+- The project's own `prompt_token_estimate` said 1,587, comfortably under
+  2,048. It counts words times 1.3, and a label like
+  `balance_not_updated_after_bank_transfer` is one word and about eight real
+  tokens. The estimate undercounts exactly the thing that made the prompt long.
+
+**Truncating from the left is not the fix either.** That removes the
+instruction and the list of 77 labels, so the model no longer knows what it is
+choosing between. Neither end of this prompt is disposable.
+
+The fix is to not truncate. `fit_shots` drops worked examples until the prompt
+fits, measured with the **real tokenizer**, against the **longest** message in
+the evaluation set so every prompt fits rather than the average one. Examples
+are the only part that degrades gracefully — with fewer of them the task is
+harder but it is still the same task. How many were dropped is printed.
+
+Anything still over the limit is counted and reported as a warning, because a
+truncated prompt invalidates a measurement rather than weakening it.
+
+---
+
 ## The other thing accuracy does not tell you
 
 Fine-tuning costs a lot once and little afterwards. In-context learning costs
@@ -158,7 +191,7 @@ pytest --cov=src --cov-report=term-missing
 ruff check src tests
 ```
 
-70 tests. CI runs them on Python 3.10, 3.11 and 3.12 on every push.
+80 tests. CI runs them on Python 3.10, 3.11 and 3.12 on every push.
 
 **No test loads a model, touches a GPU, or reaches the network**, and CI does
 not install torch — a 2 GB wheel to check string parsing would be absurd. The
@@ -180,6 +213,15 @@ tests are:
   classes an average hides.
 - **Break-even.** That it is infinite when fine-tuning is not faster, rather
   than a large number that reads like a result.
+- **The truncation bug.** That the question is the last thing in the prompt
+  and so is what right-truncation destroys, that `fit_shots` drops examples
+  until the prompt fits, that it stops at zero rather than looping, and that
+  the question survives however many examples are dropped.
+- **Surviving a library upgrade.** `TrainingArguments` changes between
+  transformers releases and Colab upgrades underneath you; a run here died on
+  `unexpected keyword argument 'warmup_ratio'` after an hour of setup.
+  Arguments are now filtered against the real signature, and the dropped names
+  are printed rather than swallowed.
 
 ---
 
@@ -190,7 +232,7 @@ src/
   config.py      models, LoRA settings, thresholds, task
   data.py        banking77 loading, stratified splits, the majority baseline
   labels.py      parsing generated text back to one of 77 labels
-  prompting.py   prompt construction for both methods
+  prompting.py   prompt construction, and fitting it to a token budget
   runtime.py     4-bit loading and batched generation (needs a GPU)
   finetune.py    LoRA training (needs a GPU)
   evaluate.py    metrics, cost accounting, break-even
