@@ -1,0 +1,5 @@
+# The test suite runs without torch, so CI does not install a 2 GB wheel to
+# check string parsing. The GPU dependencies live in requirements.txt.
+pytest>=8.0
+pytest-cov>=5.0
+ruff>=0.5

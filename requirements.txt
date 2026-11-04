@@ -1,0 +1,12 @@
+# Everything needed to run the study on a GPU.
+#
+# The test suite needs none of this: no test loads a model, touches a GPU, or
+# reaches the network. The parts that decide the result -- label parsing,
+# prompt construction, scoring -- are plain Python and are tested as such.
+
+torch>=2.2
+transformers>=4.44
+datasets>=2.19
+peft>=0.12
+bitsandbytes>=0.43
+accelerate>=0.33
