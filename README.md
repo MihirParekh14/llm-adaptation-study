@@ -159,11 +159,50 @@ would vanish.
 
 ## Results
 
-*Fill in from your run — `python -m src.run` prints all three tables.*
+300 held-out messages, 500 training examples, 4-bit, one T4.
 
 | model | method | accuracy | strict | unparsed | train | s/query |
 |---|---|---|---|---|---|---|
-| | | | | | | |
+| llama-3.2-3b | **lora** | **77.0%** | 76.0% | 0.3% | 1,767s | 0.45s |
+| llama-3.2-3b | few-shot | 59.3% | 55.3% | 2.0% | — | 1.26s |
+| llama-3.2-3b | zero-shot | 41.0% | 41.0% | 2.7% | — | 0.31s |
+| gemma-2-2b | few-shot | 57.0% | 54.7% | 5.0% | — | 1.40s |
+| gemma-2-2b | zero-shot | 24.3% | 9.0% | **51.3%** | — | 0.32s |
+| qwen-2.5-3b | lora | 72.0% | 72.0% | 0.0% | 1,716s | 0.45s |
+| qwen-2.5-3b | few-shot | 53.0% | 52.0% | 4.0% | — | 1.17s |
+| qwen-2.5-3b | zero-shot | 44.0% | 32.0% | 3.0% | — | 0.31s |
+
+Always guessing the commonest class scores about 1.3%.
+
+Fine-tuning wins wherever it ran, and the break-even on Llama is **2,167
+queries**: 1,767 seconds of training, repaid at 0.82 seconds saved per query
+because the prompt no longer carries 77 worked examples.
+
+### What the scoring was actually measuring
+
+| model | zero-shot strict | zero-shot lenient | gained | unparsed |
+|---|---|---|---|---|
+| gemma-2-2b | 9.0% | 24.3% | **+15.3** | 51.3% |
+| qwen-2.5-3b | 32.0% | 44.0% | **+12.0** | 3.0% |
+| llama-3.2-3b | 41.0% | 41.0% | **+0.0** | 2.7% |
+
+The original hypothesis was that exact-match scoring penalises prompted
+methods. The first model tested agreed. Llama disagreed completely.
+
+It is not the method. It is **instruction-following**. All three were told to
+reply with the bare label. Llama did, so strict and lenient scoring agree
+exactly. Gemma ignored it half the time — 51.3% of its answers could not be
+read as a label at all — so strict scoring reported 9% for a model that got
+24% right.
+
+So a scorer that only accepts exact matches is grading obedience to a
+formatting instruction and reporting the number as accuracy. On one model that
+costs 15 points. On another it costs nothing. Which means you cannot know
+whether your comparison is fair without measuring both.
+
+Few-shot and LoRA narrow the gap to 1–4 points for exactly the reason you would
+expect: both show the model the output format, one by example and one by
+training.
 
 ---
 
@@ -206,7 +245,16 @@ fused kernels do not implement. Train it without
 `attn_implementation="eager"` and you get a model that trains with no error and
 predicts badly — the worst kind of failure, because nothing tells you.
 
-A third, smaller one: generation uses **left padding**. With right padding, a
+**Gemma 2 runs out of memory where a larger model does not.** It is the
+smallest model here at 2B, and it was the only one to OOM on a 16 GB card. The
+cause is its vocabulary: 256,000 tokens against roughly 32,000–150,000 for the
+others. Output logits are (batch × sequence × vocabulary), so at batch 4 and
+1,024 tokens that single tensor is about 2.1 GB in fp16 before any gradients —
+exactly the allocation that failed. Training memory does not track parameter
+count. `TRAINING_OVERRIDES` gives it batch 1 with 16 accumulation steps, which
+holds the effective batch size constant and only changes the footprint.
+
+A fourth, smaller one: generation uses **left padding**. With right padding, a
 batched `generate()` continues from pad tokens and every sequence shorter than
 the longest in its batch comes back as rubbish.
 
@@ -220,7 +268,7 @@ pytest --cov=src --cov-report=term-missing
 ruff check src tests
 ```
 
-84 tests. CI runs them on Python 3.10, 3.11 and 3.12 on every push.
+87 tests. CI runs them on Python 3.10, 3.11 and 3.12 on every push.
 
 **No test loads a model, touches a GPU, or reaches the network**, and CI does
 not install torch — a 2 GB wheel to check string parsing would be absurd. The
@@ -250,6 +298,9 @@ tests are:
   are masked out of the loss, that a training example cut at the prompt leaves
   no targets at all, and that the sequence length exceeds a full training
   example with room to spare.
+- **Per-model memory.** That a large-vocabulary model gets a smaller batch,
+  and that the override keeps the effective batch size identical so only the
+  footprint changes, not the optimisation.
 - **Surviving a library upgrade.** `TrainingArguments` changes between
   transformers releases and Colab upgrades underneath you; a run here died on
   `unexpected keyword argument 'warmup_ratio'` after an hour of setup.

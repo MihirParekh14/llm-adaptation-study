@@ -472,3 +472,29 @@ def test_the_sequence_length_is_long_enough_for_a_full_training_example():
     assert config.MAX_SEQ_LENGTH > prompt_token_estimate(
         build_training_text(example, many_labels)
     ) * 1.5
+
+
+# --- training memory does not track parameter count ------------------------
+
+
+def test_a_model_with_a_large_vocabulary_gets_a_smaller_batch():
+    """Gemma 2 2B ran out of memory on 16 GB where a 3B model trained fine.
+    Its vocabulary is 256,000 tokens, and output logits are
+    (batch x sequence x vocabulary) -- about 2.1 GB in fp16 at the default
+    batch, before gradients."""
+    assert config.training_settings("gemma-2-2b")["batch_size"] < config.BATCH_SIZE
+
+
+def test_an_override_keeps_the_effective_batch_size_unchanged():
+    """Only the memory footprint should change, not the optimisation."""
+    default = config.BATCH_SIZE * config.GRAD_ACCUMULATION
+    for model in config.MODELS:
+        settings = config.training_settings(model)
+        assert settings["batch_size"] * settings["grad_accumulation"] == default
+
+
+def test_a_model_without_an_override_gets_the_defaults():
+    assert config.training_settings("llama-3.2-3b") == {
+        "batch_size": config.BATCH_SIZE,
+        "grad_accumulation": config.GRAD_ACCUMULATION,
+    }

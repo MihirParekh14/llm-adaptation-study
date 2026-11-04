@@ -110,10 +110,16 @@ def main() -> None:
             try:
                 if method == "lora":
                     base, tokenizer = load_model_and_tokenizer(model_id, for_training=True)
+                    settings = config.training_settings(name)
+                    if settings["batch_size"] != config.BATCH_SIZE:
+                        print(f"  {'':<11} note: training {name} at batch "
+                              f"{settings['batch_size']} x {settings['grad_accumulation']} "
+                              f"accumulation (large vocabulary)")
+
                     adapted, outcome = finetune(
                         base, tokenizer, stratified_sample(train, per_class=99),
                         labels, output_dir=str(config.ADAPTER_DIR / name),
-                        epochs=args.epochs,
+                        epochs=args.epochs, **settings,
                     )
                     tokenizer.padding_side = "left"
                     prompts = [build_prompt(e.text, labels) for e in test]

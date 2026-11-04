@@ -81,6 +81,33 @@ WARMUP_RATIO = 0.03
 # run later.
 MAX_SEQ_LENGTH = 1024
 
+# Per-model training overrides.
+#
+# Gemma 2 2B runs out of memory on a 16 GB card at the default batch size,
+# despite being the smallest model here. The cause is its vocabulary: 256,000
+# tokens against roughly 32,000-150,000 for the others. Output logits are
+# (batch x sequence x vocabulary), so at batch 4 and 1,024 tokens that single
+# tensor is about 2.1 GB in fp16 before any gradients -- which is exactly the
+# 1.95 GB allocation that failed.
+#
+# Training memory does not track parameter count. A 2B model with a large
+# vocabulary needs more than a 3B model with a small one.
+TRAINING_OVERRIDES: dict[str, dict[str, int]] = {
+    "gemma-2-2b": {"batch_size": 1, "grad_accumulation": 16},
+}
+
+
+def training_settings(model_name: str) -> dict[str, int]:
+    """Batch size and accumulation for a model, with any override applied.
+
+    The product of the two is held constant, so the effective batch size -- and
+    therefore the optimisation -- is the same across models. Only the memory
+    footprint changes.
+    """
+    settings = {"batch_size": BATCH_SIZE, "grad_accumulation": GRAD_ACCUMULATION}
+    settings.update(TRAINING_OVERRIDES.get(model_name, {}))
+    return settings
+
 # --- In-context learning ---------------------------------------------------
 #
 # Examples per class, not examples in total. With 77 classes even one example

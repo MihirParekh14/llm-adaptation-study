@@ -135,6 +135,8 @@ def finetune(
     labels: list[str],
     output_dir: str,
     epochs: int = config.EPOCHS,
+    batch_size: int = config.BATCH_SIZE,
+    grad_accumulation: int = config.GRAD_ACCUMULATION,
 ) -> tuple[object, TrainingOutcome]:
     """Train LoRA adapters and return the adapted model plus what it cost."""
     from peft import get_peft_model, prepare_model_for_kbit_training  # noqa: PLC0415
@@ -155,8 +157,8 @@ def finetune(
     arguments = TrainingArguments(**supported_arguments(TrainingArguments, {
         "output_dir": output_dir,
         "num_train_epochs": epochs,
-        "per_device_train_batch_size": config.BATCH_SIZE,
-        "gradient_accumulation_steps": config.GRAD_ACCUMULATION,
+        "per_device_train_batch_size": batch_size,
+        "gradient_accumulation_steps": grad_accumulation,
         "learning_rate": config.LEARNING_RATE,
         "warmup_ratio": config.WARMUP_RATIO,
         "logging_steps": 25,
