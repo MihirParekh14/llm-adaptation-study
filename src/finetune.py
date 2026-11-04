@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from src import config
 from src.data import Example
-from src.prompting import build_training_text
+from src.prompting import build_prompt, build_training_text
 from src.runtime import count_parameters, peak_memory_gb, supports_bfloat16
 
 
@@ -64,29 +64,68 @@ def lora_config():
     )
 
 
-def build_dataset(examples: list[Example], labels: list[str], tokenizer):
-    """Tokenise the training texts.
+IGNORE_INDEX = -100
 
-    Labels are the input ids: this is ordinary causal language modelling, and
-    the model learns the intent by learning to produce the token sequence that
-    follows "Intent:".
+
+def mask_prompt(input_ids: list[int], attention: list[int], prompt_length: int) -> list[int]:
+    """Loss targets: the answer only, with the prompt and padding ignored.
+
+    Training on the whole sequence is what the obvious implementation does, and
+    on this task it is close to useless. The prompt is a 700-token list of 77
+    label names, identical in every example; the answer is about five tokens.
+    Scoring the whole thing means roughly 99% of the gradient is the model
+    learning to recite a constant, which it does almost immediately -- training
+    loss fell from 1.185 to 0.0046 inside two epochs while accuracy stayed at
+    42%. The loss curve looked excellent and the model had learned nothing.
+
+    Masking the prompt leaves only the part that is actually different between
+    examples.
+    """
+    masked = list(input_ids)
+    for position in range(len(masked)):
+        if position < prompt_length or not attention[position]:
+            masked[position] = IGNORE_INDEX
+    return masked
+
+
+def build_dataset(examples: list[Example], labels: list[str], tokenizer):
+    """Tokenise the training texts and mask everything but the answer.
+
+    Also checks that no example was cut short. A truncated training example
+    silently drops the answer off the end, so the model trains on a prompt that
+    leads nowhere -- which is exactly what happened at the old sequence length.
     """
     from datasets import Dataset  # noqa: PLC0415
 
+    prompts = [build_prompt(example.text, labels) for example in examples]
     texts = [build_training_text(example, labels) for example in examples]
-    dataset = Dataset.from_dict({"text": texts})
 
-    def tokenize(batch):
-        encoded = tokenizer(
-            batch["text"],
-            truncation=True,
-            max_length=config.MAX_SEQ_LENGTH,
-            padding="max_length",
+    encoded = tokenizer(
+        texts,
+        truncation=True,
+        max_length=config.MAX_SEQ_LENGTH,
+        padding="max_length",
+    )
+    prompt_lengths = [
+        len(ids) for ids in tokenizer(prompts, truncation=True,
+                                      max_length=config.MAX_SEQ_LENGTH)["input_ids"]
+    ]
+
+    untruncated = tokenizer(texts, truncation=False)["input_ids"]
+    cut = sum(len(ids) > config.MAX_SEQ_LENGTH for ids in untruncated)
+    longest = max(len(ids) for ids in untruncated)
+    if cut:
+        print(f"  WARNING: {cut} of {len(texts)} training examples exceed "
+              f"MAX_SEQ_LENGTH={config.MAX_SEQ_LENGTH} (longest is {longest}). "
+              f"Their answers were cut off -- raise it, these results mean nothing.")
+
+    encoded["labels"] = [
+        mask_prompt(ids, attention, prompt_length)
+        for ids, attention, prompt_length in zip(
+            encoded["input_ids"], encoded["attention_mask"], prompt_lengths, strict=True
         )
-        encoded["labels"] = [list(ids) for ids in encoded["input_ids"]]
-        return encoded
-
-    return dataset.map(tokenize, batched=True, remove_columns=["text"])
+    ]
+    return Dataset.from_dict(dict(encoded))
 
 
 def finetune(

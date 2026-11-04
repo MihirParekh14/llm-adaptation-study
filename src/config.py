@@ -70,7 +70,16 @@ BATCH_SIZE = 4
 GRAD_ACCUMULATION = 4
 LEARNING_RATE = 2e-4
 WARMUP_RATIO = 0.03
-MAX_SEQ_LENGTH = 256
+# Long enough for the whole training example, answer included.
+#
+# This was 256, which is roughly a third of what a training example needs. The
+# zero-shot prompt is about 700 real tokens, because 77 snake_case labels
+# tokenise far longer than they read -- `balance_not_updated_after_bank_transfer`
+# is one word and about eight tokens. So every training example was cut before
+# its answer, and the model was fine-tuned on truncated label lists ending
+# nowhere. Same defect as the few-shot prompt, in a different place, found a
+# run later.
+MAX_SEQ_LENGTH = 1024
 
 # --- In-context learning ---------------------------------------------------
 #

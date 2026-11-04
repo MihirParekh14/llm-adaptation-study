@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from src import config
 from src.data import (
     Example,
     cap,
@@ -423,3 +424,51 @@ def test_everything_supported_is_kept():
 
     wanted = {"output_dir": "x", "learning_rate": 2e-4, "warmup_ratio": 0.03}
     assert supported_arguments(Newer, wanted) == wanted
+
+
+# --- what the fine-tuned model is actually scored on -----------------------
+#
+# Training on the whole sequence is what the obvious implementation does, and
+# here it is close to useless: the prompt is a 700-token constant and the
+# answer is five tokens, so almost all the gradient teaches the model to
+# recite a list. Loss fell from 1.185 to 0.0046 in two epochs while accuracy
+# stayed at 42%.
+
+
+def test_only_the_answer_contributes_to_the_loss():
+    from src.finetune import IGNORE_INDEX, mask_prompt
+
+    ids = [10, 11, 12, 13, 14]
+    attention = [1, 1, 1, 1, 1]
+    masked = mask_prompt(ids, attention, prompt_length=3)
+
+    assert masked == [IGNORE_INDEX, IGNORE_INDEX, IGNORE_INDEX, 13, 14]
+
+
+def test_padding_is_ignored_too():
+    from src.finetune import IGNORE_INDEX, mask_prompt
+
+    masked = mask_prompt([10, 11, 12, 0, 0], [1, 1, 1, 0, 0], prompt_length=2)
+    assert masked == [IGNORE_INDEX, IGNORE_INDEX, 12, IGNORE_INDEX, IGNORE_INDEX]
+
+
+def test_an_example_cut_at_the_prompt_leaves_nothing_to_learn_from():
+    """Which is the signature of a truncated training example: every target
+    ignored, so the row contributes no gradient at all."""
+    from src.finetune import IGNORE_INDEX, mask_prompt
+
+    masked = mask_prompt([10, 11, 12], [1, 1, 1], prompt_length=3)
+    assert set(masked) == {IGNORE_INDEX}
+
+
+def test_the_sequence_length_is_long_enough_for_a_full_training_example():
+    """It was 256 against a ~700-token prompt, so every answer was cut off."""
+    many_labels = [
+        "card_arrival", "balance_not_updated_after_bank_transfer",
+        "apple_pay_or_google_pay", "card_payment_fee_charged",
+    ] + [f"intent_{i:02d}" for i in range(73)]
+    example = Example(text="where is my card please", label="card_arrival")
+
+    assert config.MAX_SEQ_LENGTH > prompt_token_estimate(
+        build_training_text(example, many_labels)
+    ) * 1.5

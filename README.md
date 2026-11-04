@@ -105,6 +105,35 @@ truncated prompt invalidates a measurement rather than weakening it.
 
 ---
 
+## A third defect, same shape, a run later
+
+With the prompt fixed, LoRA came back at 42% — and its training loss had
+fallen from 1.185 to **0.0046** in under two epochs. A loss that good with
+accuracy that ordinary means the model learned something other than the task.
+
+Two causes, both the same mistake as before in a different place.
+
+**The loss was computed over the whole sequence.** A training example is the
+prompt plus the answer. The prompt is a ~700-token list of 77 label names,
+identical in every example; the answer is about five tokens. Scoring all of it
+means roughly 99% of the gradient teaches the model to recite a constant,
+which it does almost immediately. The loss curve looks excellent and the model
+has not learned to classify anything. Prompt tokens are now masked out with
+`-100` so only the answer counts.
+
+**`MAX_SEQ_LENGTH` was 256.** Against a ~700-token prompt, every training
+example was cut before its answer — the model was fine-tuned on truncated
+label lists ending nowhere. Raised to 1,024, and `build_dataset` now counts
+how many examples exceed it and says so rather than silently cutting them.
+
+The word-based estimate hid this one too: 77 snake_case labels read as 77
+words and tokenise as roughly 550.
+
+Three defects, all the same underlying shape — **a limit smaller than the
+thing it was limiting, failing without an error.**
+
+---
+
 ## The other thing accuracy does not tell you
 
 Fine-tuning costs a lot once and little afterwards. In-context learning costs
@@ -191,7 +220,7 @@ pytest --cov=src --cov-report=term-missing
 ruff check src tests
 ```
 
-80 tests. CI runs them on Python 3.10, 3.11 and 3.12 on every push.
+84 tests. CI runs them on Python 3.10, 3.11 and 3.12 on every push.
 
 **No test loads a model, touches a GPU, or reaches the network**, and CI does
 not install torch — a 2 GB wheel to check string parsing would be absurd. The
@@ -217,6 +246,10 @@ tests are:
   and so is what right-truncation destroys, that `fit_shots` drops examples
   until the prompt fits, that it stops at zero rather than looping, and that
   the question survives however many examples are dropped.
+- **What the fine-tuned model is scored on.** That prompt tokens and padding
+  are masked out of the loss, that a training example cut at the prompt leaves
+  no targets at all, and that the sequence length exceeds a full training
+  example with room to spare.
 - **Surviving a library upgrade.** `TrainingArguments` changes between
   transformers releases and Colab upgrades underneath you; a run here died on
   `unexpected keyword argument 'warmup_ratio'` after an hour of setup.
